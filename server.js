@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { openDb, tx } from './lib/db.js';
 import { createStore } from './lib/store.js';
-import { hashPassword, verifyPassword, startSession, endSession, loadUser, requireLogin } from './lib/auth.js';
+import {
+  hashPassword, verifyPassword, startSession, endSession, endOtherSessions, purgeExpiredSessions, loadUser, requireLogin,
+} from './lib/auth.js';
 import { flash } from './lib/flash.js';
 import { toCents, toAmountText, simplifyDebts, effectOn, netWithEachPerson, isSettled } from './lib/ledger.js';
 import { cleanText, toIds, isEmail, safeNextPath, parseExpense, parseSettlement } from './lib/forms.js';
@@ -15,6 +17,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 export function createApp(db) {
   const store = createStore(db);
+  purgeExpiredSessions(db);
   const app = express();
   app.disable('x-powered-by');
   app.use(express.static(join(HERE, 'public')));
@@ -51,6 +54,7 @@ export function createApp(db) {
     if (!user || !verifyPassword(passwordOf(req.body, 'password'), user.password_hash)) {
       return res.page('Log in', views.loginPage({ error: 'That email and password don’t match.', email, next, spotsLeft: spotsLeft() }), 401);
     }
+    purgeExpiredSessions(db);
     startSession(db, res, user.id);
     res.redirect(next);
   });
@@ -348,6 +352,8 @@ export function createApp(db) {
       return renderAccount(req, res, { error: `The new password needs at least ${MIN_PASSWORD_LENGTH} characters.` });
     }
     store.users.setPassword(req.user.id, hashPassword(password));
+    // Anyone else signed in as this user (a shared computer, a copied cookie) is signed out.
+    endOtherSessions(db, req.user.id, req.sessionToken);
     res.flashRedirect('/account', 'Password changed.');
   });
 
