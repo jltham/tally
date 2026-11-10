@@ -2,7 +2,7 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 import { openDb, tx } from './lib/db.js';
-import { createStore } from './lib/store.js';
+import { createStore, DELETED_EMAIL_DOMAIN } from './lib/store.js';
 import {
   hashPassword, verifyPassword, startSession, endSession, endOtherSessions, purgeExpiredSessions, loadUser, requireLogin,
 } from './lib/auth.js';
@@ -85,7 +85,7 @@ export function createApp(db) {
     const fail = (error, status = 400) => res.page('Sign up', views.signupPage({ error, values, spotsLeft: spotsLeft() }), status);
     if (spotsLeft() <= 0) return fail(`All ${MAX_USERS} accounts are taken.`, 403);
     if (!values.name) return fail('Please enter your name.');
-    if (!isEmail(values.email)) return fail('Please enter a valid email address.');
+    if (!isEmail(values.email) || values.email.endsWith(DELETED_EMAIL_DOMAIN)) return fail('Please enter a valid email address.');
     if (password.length < MIN_PASSWORD_LENGTH) return fail(`Your password needs at least ${MIN_PASSWORD_LENGTH} characters.`);
     if (store.users.byEmail(values.email)) return fail('There’s already an account with that email.');
     const id = store.users.create(values.name, values.email, hashPassword(password));
@@ -378,11 +378,10 @@ export function createApp(db) {
       return renderAccount(req, res, { error: 'That password isn’t right.' });
     }
     if (store.users.groupCount(id) > 0) return renderAccount(req, res, { error: 'Leave all your groups first.' });
-    if (store.users.isReferenced(id)) {
-      return renderAccount(req, res, { error: 'Your name is still on expenses in a group you left, so the account has to stay to keep those records correct.' });
-    }
     endSession(db, req, res);
-    store.users.delete(id);
+    // On past expenses: keep the row so the history adds up, but remove everything personal.
+    if (store.users.isReferenced(id)) store.users.anonymise(id);
+    else store.users.delete(id);
     res.redirect('/login');
   });
 
