@@ -25,7 +25,7 @@ Tally is a Splitwise-style app for **one small circle of people (at most 10 acco
 
 | Thing | Create | Read | Update | Delete |
 |---|---|---|---|---|
-| Account | Sign up (until 10 exist) | Dashboard | Change name, password | Delete account (once you've left every group) |
+| Account | Sign up (until 10 exist) | Dashboard | Change name, password | Delete account once you've left every group (past expenses then show "Deleted user") |
 | Group | New group, pick members | Group page with timeline and balances | Rename, add/remove members | Delete group (once everyone is settled up) |
 | Expense | Split equally or by exact amounts | Timeline, "you lent / you borrowed" | Edit everything | Delete |
 | Payment (settle up) | Record "A paid B" (one click from a suggestion) | Timeline | Edit | Delete |
