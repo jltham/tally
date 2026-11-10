@@ -10,7 +10,8 @@ import { flash } from './lib/flash.js';
 import { toCents, toAmountText, simplifyDebts, effectOn, netWithEachPerson, isSettled } from './lib/ledger.js';
 import { cleanText, toIds, isEmail, safeNextPath, parseExpense, parseSettlement } from './lib/forms.js';
 import { todayIso } from './lib/dates.js';
-import { MAX_USERS, MIN_PASSWORD_LENGTH } from './lib/limits.js';
+import { MAX_USERS, MIN_PASSWORD_LENGTH, LOGIN_LIMITS } from './lib/limits.js';
+import { createThrottle } from './lib/throttle.js';
 import * as views from './lib/views.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,8 @@ export function createApp(db) {
   });
 
   const notFound = (res) => res.page('Not found', views.notFoundPage(), 404);
+  const failedLoginsByEmail = createThrottle({ limit: LOGIN_LIMITS.perEmail, windowMs: LOGIN_LIMITS.windowMs });
+  const failedLoginsByAddress = createThrottle({ limit: LOGIN_LIMITS.perAddress, windowMs: LOGIN_LIMITS.windowMs });
   const spotsLeft = () => MAX_USERS - store.users.count();
   const passwordOf = (body, field) => String(body[field] ?? '');
   /** Ids from a members checkbox list, keeping only real users. */
@@ -50,10 +53,19 @@ export function createApp(db) {
   app.post('/login', (req, res) => {
     const email = cleanText(req.body.email, 200).toLowerCase();
     const next = safeNextPath(req.body.next);
+    const loginPage = (error, status) => res.page('Log in', views.loginPage({ error, email, next, spotsLeft: spotsLeft() }), status);
+    // Checked before the password, so a locked email can't be guessed even with the right one.
+    if (failedLoginsByEmail.isBlocked(email) || failedLoginsByAddress.isBlocked(req.ip)) {
+      const minutes = Math.round(LOGIN_LIMITS.windowMs / 60000);
+      return loginPage(`Too many failed attempts. Wait ${minutes} minutes and try again.`, 429);
+    }
     const user = store.users.byEmail(email);
     if (!user || !verifyPassword(passwordOf(req.body, 'password'), user.password_hash)) {
-      return res.page('Log in', views.loginPage({ error: 'That email and password don’t match.', email, next, spotsLeft: spotsLeft() }), 401);
+      failedLoginsByEmail.recordFailure(email);
+      failedLoginsByAddress.recordFailure(req.ip);
+      return loginPage('That email and password don’t match.', 401);
     }
+    failedLoginsByEmail.clear(email);
     purgeExpiredSessions(db);
     startSession(db, res, user.id);
     res.redirect(next);
@@ -380,8 +392,17 @@ export function createApp(db) {
   return app;
 }
 
+/**
+ * Where to listen. Loopback by default: Tally is for one laptop, so other machines on the same
+ * Wi-Fi shouldn't reach it. Set HOST=0.0.0.0 to share it on a network you trust.
+ */
+export function listenAddress(env) {
+  return { host: env.HOST || '127.0.0.1', port: Number(env.PORT ?? 3000) };
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const db = openDb(process.env.TALLY_DB ?? join(HERE, 'data', 'tally.db'));
-  const port = Number(process.env.PORT ?? 3000);
-  createApp(db).listen(port, () => console.log(`Tally running at http://localhost:${port}`));
+  const { host, port } = listenAddress(process.env);
+  const shown = host === '127.0.0.1' ? 'localhost' : host;
+  createApp(db).listen(port, host, () => console.log(`Tally running at http://${shown}:${port}`));
 }

@@ -48,7 +48,9 @@ npm run seed     # optional: 4 demo users and a sample group
 npm start        # http://localhost:3000
 ```
 
-Demo logins after seeding: `alice@example.com`, `ben@example.com`, `chloe@example.com`, `dev@example.com`, all with the password `password123`.
+Demo logins after seeding: `alice@example.com`, `ben@example.com`, `chloe@example.com` and `dev@example.com`. Each gets its own random password, which `npm run seed` prints once. To give them all one known password for a demo, run `SEED_PASSWORD=your-choice npm run seed` instead.
+
+Tally only accepts connections from this computer. To let other devices on a network you trust use it, start it with `HOST=0.0.0.0 npm start`. After 5 wrong passwords for an email (or 20 from one address) in 15 minutes, logins pause until that window ends.
 
 ```bash
 npm test

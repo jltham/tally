@@ -1,4 +1,7 @@
 // Creates 4 demo users and a sample group. Safe to run once on an empty database.
+// Each account gets its own random password, printed once. Set SEED_PASSWORD to use one
+// known password for every account instead (handy for demos; don't use it on a shared network).
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb } from '../lib/db.js';
@@ -15,14 +18,16 @@ if (store.users.count() > 0) {
   process.exit(0);
 }
 
-const PASSWORD = 'password123';
-const hash = hashPassword(PASSWORD);
-const [alice, ben, chloe, dev] = [
+const DEMO_USERS = [
   ['Alice Tan', 'alice@example.com'],
   ['Ben Lim', 'ben@example.com'],
   ['Chloe Ng', 'chloe@example.com'],
   ['Dev Rao', 'dev@example.com'],
-].map(([name, email]) => store.users.create(name, email, hash));
+];
+const logins = DEMO_USERS.map(([name, email]) => ({
+  name, email, password: process.env.SEED_PASSWORD || randomBytes(12).toString('base64url'),
+}));
+const [alice, ben, chloe, dev] = logins.map(({ name, email, password }) => store.users.create(name, email, hashPassword(password)));
 
 const flat = store.groups.create('Flat 12B', alice, [ben, chloe]);
 const trip = store.groups.create('Penang weekend', ben, [alice, dev]);
@@ -47,4 +52,5 @@ store.settlements.save({ groupId: flat, fromUser: chloe, toUser: alice, amountCe
 add(trip, 'Hotel', 360, ben, '2026-10-24', [alice, ben, dev]);
 add(trip, 'Char kway teow & drinks', 54, dev, '2026-10-25', [alice, ben, dev]);
 
-console.log(`Seeded 4 users (password: ${PASSWORD}) and 2 groups.`);
+console.log('Seeded 4 users and 2 groups. Logins (shown only now):');
+for (const { email, password } of logins) console.log(`  ${email.padEnd(20)} ${password}`);
