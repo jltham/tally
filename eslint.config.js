@@ -4,7 +4,8 @@ import js from '@eslint/js';
 import globals from 'globals';
 
 export default [
-  { ignores: ['node_modules/', 'data/', 'docs/'] },
+  // .worktrees/ holds git worktrees: other branches checked out inside the repo, not this project's code.
+  { ignores: ['node_modules/', 'data/', 'docs/', '.worktrees/'] },
   js.configs.recommended,
   {
     rules: {

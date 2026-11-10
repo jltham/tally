@@ -33,6 +33,16 @@ test('an Express error handler can keep its unused fourth parameter', async () =
   assert.deepEqual(await problemsIn(code, 'server.js'), []);
 });
 
+test('other checkouts in .worktrees/ are not linted as part of this project', async () => {
+  // git worktrees kept inside the repo hold other branches (and their own copies of these files).
+  for (const file of ['.worktrees/some-branch/server.js', '.worktrees/some-branch/test/dates.test.js']) {
+    assert.equal(await eslint.isPathIgnored(join(ROOT, file)), true, file);
+  }
+  for (const file of ['server.js', 'lib/ledger.js', 'test/lint.test.js']) {
+    assert.equal(await eslint.isPathIgnored(join(ROOT, file)), false, file);
+  }
+});
+
 test('the whole project lints clean', async () => {
   const results = await eslint.lintFiles(['.']);
   const errors = results.flatMap((r) => r.messages.map((m) => `${r.filePath}:${m.line} ${m.ruleId} ${m.message}`));
