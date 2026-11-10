@@ -1,7 +1,7 @@
 // The app runs on the user's own laptop, so "today" must be the laptop's local date, not UTC.
 process.env.TZ = 'Asia/Singapore'; // UTC+8, no daylight saving
 
-import { test, before, after, mock } from 'node:test';
+import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startApp, idFromLocation } from './helpers.js';
 import { todayIso } from '../lib/dates.js';
