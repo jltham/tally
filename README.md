@@ -55,4 +55,16 @@ The database lives in `data/tally.db`. Delete that file to start over.
 - **Server:** Node + Express 5, HTML rendered on the server (no build step).
 - **Database:** SQLite through Node's built-in `node:sqlite`. Money is stored as whole cents to avoid rounding errors.
 - **Login:** passwords hashed with scrypt; a random session token in an HttpOnly, SameSite=Lax cookie, stored in the database.
-- **The maths** lives in `lib/ledger.js` (splitting, balances, fewest-payments settle-up) and is covered by unit tests.
+- **The maths** lives in `lib/ledger.js` (splitting, balances, fewest-payments settle-up) and is covered by unit tests. The browser imports the same file for the live preview on the expense form.
+
+Where things are:
+
+| File | Job |
+|---|---|
+| `server.js` | Routes: who may do what, and which page to show |
+| `lib/forms.js` | Cleaning and validating what people type into forms |
+| `lib/ledger.js` | Money maths (no database, no web) |
+| `lib/store.js` | All the SQL |
+| `lib/views.js` | The HTML pages |
+| `lib/auth.js`, `lib/flash.js` | Login sessions, one-time messages |
+| `lib/limits.js`, `lib/dates.js` | The 10-user and password rules; date helpers |

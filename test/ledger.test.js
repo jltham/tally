@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toCents, formatCents, splitEqual, computeBalances, simplifyDebts, effectOn } from '../lib/ledger.js';
+import { toCents, formatCents, toAmountText, splitEqual, computeBalances, simplifyDebts, effectOn, netWithEachPerson } from '../lib/ledger.js';
+import { isIsoDate } from '../lib/dates.js';
 
 test('toCents parses typical inputs', () => {
   assert.equal(toCents('12'), 1200);
@@ -125,4 +126,22 @@ test('effectOn', () => {
   assert.equal(effectOn(1, e), 600);
   assert.equal(effectOn(2, e), -300);
   assert.equal(effectOn(9, e), 0);
+});
+
+test('netWithEachPerson combines payments across groups and drops people who net to zero', () => {
+  const payments = [
+    { fromUser: 2, toUser: 1, amountCents: 500 }, // group A: 2 pays me
+    { fromUser: 1, toUser: 2, amountCents: 200 }, // group B: I pay 2
+    { fromUser: 1, toUser: 3, amountCents: 300 },
+    { fromUser: 3, toUser: 1, amountCents: 300 },
+    { fromUser: 4, toUser: 5, amountCents: 999 }, // doesn't involve me
+  ];
+  assert.deepEqual([...netWithEachPerson(1, payments)], [[2, 300]]);
+});
+
+test('toAmountText and isIsoDate', () => {
+  assert.equal(toAmountText(1250), '12.50');
+  assert.equal(toAmountText(5), '0.05');
+  assert.ok(isIsoDate('2026-02-28'));
+  for (const bad of ['2026-02-30', '2026-2-1', '', 'tomorrow']) assert.ok(!isIsoDate(bad), bad);
 });

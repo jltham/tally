@@ -1,46 +1,40 @@
 // Progressive enhancement only: every page works without this file.
+// Uses the same money maths as the server, so the live preview can't drift from what gets saved.
+import { toCents, formatCents, splitEqual } from '/ledger.js';
 
 // Confirm before destructive actions.
-document.addEventListener('submit', (ev) => {
-  const msg = ev.target.dataset?.confirm;
-  if (msg && !window.confirm(msg)) ev.preventDefault();
+document.addEventListener('submit', (event) => {
+  const message = event.target.dataset?.confirm;
+  if (message && !window.confirm(message)) event.preventDefault();
 });
 
 // Expense form: show the right split section and live totals.
 const form = document.getElementById('expense-form');
 if (form) {
-  const toCents = (v) => {
-    const s = String(v).trim().replace(/,/g, '');
-    return /^\d+(\.\d{1,2})?$/.test(s) ? Math.round(Number(s) * 100) : null;
-  };
-  const fmt = (c) => `S$${(c / 100).toFixed(2)}`;
   const amount = form.querySelector('#amount');
   const sections = form.querySelectorAll('[data-split]');
   const remaining = form.querySelector('[data-remaining]');
 
   const update = () => {
-    const type = form.querySelector('input[name="split_type"]:checked')?.value ?? 'equal';
-    sections.forEach((s) => (s.hidden = s.dataset.split !== type));
+    const splitType = form.querySelector('input[name="split_type"]:checked')?.value ?? 'equal';
+    sections.forEach((section) => (section.hidden = section.dataset.split !== splitType));
     const total = toCents(amount.value) ?? 0;
 
-    // Equal: show each person's share. As on the server, the payer covers the first odd cent,
-    // then the lowest ids.
+    // Equal: show each person's share.
     const boxes = [...form.querySelectorAll('input[name="participants"]')];
-    const payer = form.querySelector('select[name="paid_by"]').value;
-    const chosen = boxes
-      .filter((b) => b.checked)
-      .sort((a, b) => (a.value === payer ? -1 : b.value === payer ? 1 : Number(a.value) - Number(b.value)));
-    const base = chosen.length ? Math.floor(total / chosen.length) : 0;
-    let extra = chosen.length ? total - base * chosen.length : 0;
-    const each = new Map(chosen.map((b) => [b, base + (extra-- > 0 ? 1 : 0)]));
-    boxes.forEach((b) => {
-      b.closest('label').querySelector('[data-each]').textContent = each.has(b) && total ? fmt(each.get(b)) : '';
+    const chosen = boxes.filter((b) => b.checked).map((b) => Number(b.value));
+    const payer = Number(form.querySelector('select[name="paid_by"]').value);
+    const shares = total && chosen.length ? new Map(splitEqual(total, chosen, payer).map((s) => [s.userId, s.cents])) : new Map();
+    boxes.forEach((box) => {
+      const cents = shares.get(Number(box.value));
+      box.closest('label').querySelector('[data-each]').textContent = cents === undefined ? '' : formatCents(cents);
     });
 
     // Exact: show how much is left to assign.
-    const sum = [...form.querySelectorAll('input.share')].reduce((a, i) => a + (toCents(i.value) ?? 0), 0);
-    const left = total - sum;
-    remaining.textContent = left === 0 ? `✓ Adds up to ${fmt(total)}` : left > 0 ? `${fmt(left)} left to assign` : `${fmt(-left)} too much`;
+    const assigned = [...form.querySelectorAll('input.share')].reduce((sum, input) => sum + (toCents(input.value) ?? 0), 0);
+    const left = total - assigned;
+    remaining.textContent = left === 0 ? `✓ Adds up to ${formatCents(total)}`
+      : left > 0 ? `${formatCents(left)} left to assign` : `${formatCents(-left)} too much`;
     remaining.className = `small ${left === 0 ? 'pos' : 'neg'}`;
   };
   form.addEventListener('input', update);
