@@ -12,6 +12,7 @@ import { cleanText, toIds, isEmail, safeNextPath, parseExpense, parseSettlement 
 import { todayIso } from './lib/dates.js';
 import { MAX_USERS, MIN_PASSWORD_LENGTH, LOGIN_LIMITS } from './lib/limits.js';
 import { createThrottle } from './lib/throttle.js';
+import { securityHeaders, refuseCrossSiteWrites } from './lib/security.js';
 import * as views from './lib/views.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,8 @@ export function createApp(db) {
   purgeExpiredSessions(db);
   const app = express();
   app.disable('x-powered-by');
+  app.use(securityHeaders);
+  app.use(refuseCrossSiteWrites);
   app.use(express.static(join(HERE, 'public')));
   // The browser imports the same money maths the server uses.
   app.get('/ledger.js', (req, res) => res.sendFile(join(HERE, 'lib', 'ledger.js')));
