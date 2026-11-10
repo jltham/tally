@@ -72,10 +72,11 @@ Where things are:
 
 | File | Job |
 |---|---|
-| `server.js` | Routes: who may do what, and which page to show |
+| `server.js` | Routes: who may do what, and which page to show. Expenses and payments share one set of routes (`entryRoutes`) |
 | `lib/forms.js` | Cleaning and validating what people type into forms |
-| `lib/ledger.js` | Money maths (no database, no web) |
-| `lib/store.js` | All the SQL |
+| `lib/ledger.js` | Money maths (no database, no web; the browser loads it too) |
+| `lib/store.js` | All the SQL, sessions included |
 | `lib/views.js` | The HTML pages |
-| `lib/auth.js`, `lib/flash.js` | Login sessions, one-time messages |
-| `lib/limits.js`, `lib/dates.js` | The 10-user and password rules; date helpers |
+| `lib/auth.js`, `lib/flash.js` | Passwords, session cookies, one-time messages |
+| `lib/security.js`, `lib/throttle.js` | Cross-site checks and security headers; failed-login limits |
+| `lib/limits.js`, `lib/dates.js` | Product rules (10 users, password length, login limits, field lengths); date helpers |
