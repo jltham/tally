@@ -30,7 +30,7 @@ const trip = store.groups.create('Penang weekend', ben, [alice, dev]);
 const add = (groupId, description, dollars, paidBy, spentOn, people) => {
   const amountCents = Math.round(dollars * 100);
   store.expenses.save(
-    { groupId, description, amountCents, paidBy, spentOn, splitType: 'equal', shares: splitEqual(amountCents, people) },
+    { groupId, description, amountCents, paidBy, spentOn, splitType: 'equal', shares: splitEqual(amountCents, people, paidBy) },
     paidBy,
   );
 };

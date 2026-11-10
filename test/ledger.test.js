@@ -65,6 +65,61 @@ test('simplifyDebts settles everyone with at most n-1 payments', () => {
   assert.deepEqual(simplifyDebts(new Map([[1, 0]])), []);
 });
 
+const settles = (bal, pays) => {
+  const after = new Map(bal);
+  for (const p of pays) {
+    after.set(p.fromUser, after.get(p.fromUser) + p.amountCents);
+    after.set(p.toUser, after.get(p.toUser) - p.amountCents);
+  }
+  return [...after.values()].every((v) => v === 0);
+};
+
+test('simplifyDebts finds the true minimum where largest-first matching does not', () => {
+  // +4 is cleared by -2 and -2; +11 by -3 and -8: 4 payments, not 5.
+  const bal = new Map([[1, -2], [2, -3], [3, 4], [4, -2], [5, -8], [6, 11]]);
+  const pays = simplifyDebts(bal);
+  assert.ok(settles(bal, pays));
+  assert.equal(pays.length, 4);
+});
+
+test('simplifyDebts uses n - (number of zero-sum groups) payments on random balances', () => {
+  // Brute-force the minimum: n - max number of disjoint zero-sum subsets.
+  const minPayments = (vals) => {
+    const n = vals.length;
+    const best = new Array(1 << n).fill(0);
+    for (let m = 1; m < 1 << n; m++) {
+      let sum = 0;
+      for (let i = 0; i < n; i++) if (m & (1 << i)) { sum += vals[i]; best[m] = Math.max(best[m], best[m ^ (1 << i)]); }
+      if (sum === 0) best[m] += 1;
+    }
+    return n - best[(1 << n) - 1];
+  };
+  let seed = 7;
+  const rand = (k) => (seed = (seed * 1103515245 + 12345) % 2 ** 31) % k;
+  for (let t = 0; t < 300; t++) {
+    const n = 2 + rand(9);
+    const vals = Array.from({ length: n - 1 }, () => (rand(13) - 6) || 1);
+    vals.push(-vals.reduce((a, b) => a + b, 0));
+    const nonzero = vals.filter((v) => v !== 0);
+    const bal = new Map(vals.map((v, i) => [i + 1, v]));
+    const pays = simplifyDebts(bal);
+    assert.ok(settles(bal, pays));
+    assert.equal(pays.length, minPayments(nonzero), `balances ${vals}`);
+  }
+});
+
+test('splitEqual gives the odd cent to the payer first when they are in the split', () => {
+  assert.deepEqual(splitEqual(1000, [1, 2, 3], 3), [
+    { userId: 1, cents: 333 },
+    { userId: 2, cents: 333 },
+    { userId: 3, cents: 334 },
+  ]);
+  // Two odd cents: payer, then lowest id among the rest.
+  assert.deepEqual(splitEqual(1001, [1, 2, 3], 2).map((s) => s.cents), [334, 334, 333]);
+  // Payer not in the split: falls back to lowest ids.
+  assert.deepEqual(splitEqual(1000, [1, 2, 3], 9).map((s) => s.cents), [334, 333, 333]);
+});
+
 test('effectOn', () => {
   const e = { paidBy: 1, amountCents: 900, shares: splitEqual(900, [1, 2, 3]) };
   assert.equal(effectOn(1, e), 600);

@@ -1,7 +1,7 @@
 import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
-import { openDb, MAX_USERS } from './lib/db.js';
+import { openDb, tx, MAX_USERS } from './lib/db.js';
 import { createStore } from './lib/store.js';
 import { hashPassword, verifyPassword, startSession, endSession, loadUser, requireLogin } from './lib/auth.js';
 import { toCents, splitEqual, simplifyDebts, effectOn } from './lib/ledger.js';
@@ -195,9 +195,33 @@ export function createApp(db) {
   });
 
   app.post('/groups/:gid/delete', (req, res) => {
+    if ([...store.groupBalances(req.group.id).values()].some((c) => c !== 0)) {
+      return settingsPage(req, res, 'This group can only be deleted once everyone is settled up, so nobody loses track of money they’re owed.', 400);
+    }
     store.groups.delete(req.group.id);
     res.flashRedirect('/', `Deleted “${req.group.name}”.`);
   });
+
+  /**
+   * Apply a change to a group's expenses or payments, but undo it if it would leave someone who
+   * has left the group with a balance (they can no longer settle it). Returns an error message or null.
+   */
+  function changeLedger(req, change) {
+    const memberIds = new Set(req.members.map((m) => m.id));
+    let owing = [];
+    try {
+      tx(db, () => {
+        change();
+        owing = [...store.groupBalances(req.group.id)].filter(([id, cents]) => cents !== 0 && !memberIds.has(id));
+        if (owing.length) throw new Error('former member would owe money');
+      });
+      return null;
+    } catch (err) {
+      if (!owing.length) throw err;
+      const names = owing.map(([id]) => store.users.get(id)?.name ?? 'a former member').join(' and ');
+      return `This would leave ${names} with an unsettled balance, but ${owing.length === 1 ? 'they are' : 'they are all'} no longer in this group. Add them back in Settings first if the change is right.`;
+    }
+  }
 
   // ---------- expenses ----------
   /** People who can appear on an expense: current members plus anyone already on it. */
@@ -240,7 +264,7 @@ export function createApp(db) {
     let shares;
     if (draft.splitType === 'equal') {
       if (!participants.length) return fail('Pick at least one person to split with.');
-      shares = splitEqual(amountCents, participants);
+      shares = splitEqual(amountCents, participants, draft.paidBy);
     } else {
       if (exact.some((s) => s.cents === null)) return fail('One of the amounts isn’t a valid number.');
       shares = exact.filter((s) => s.cents > 0);
@@ -285,13 +309,22 @@ export function createApp(db) {
     if (error) {
       return res.page('Edit expense', V.expenseFormPage({ group: req.group, me: req.user, people, expense: { ...draft, id: req.expense.id }, error }), 400);
     }
-    store.expenses.save({ ...value, id: req.expense.id }, req.user.id);
+    const blocked = changeLedger(req, () => store.expenses.save({ ...value, id: req.expense.id }, req.user.id));
+    if (blocked) {
+      return res.page('Edit expense', V.expenseFormPage({ group: req.group, me: req.user, people, expense: { ...value, id: req.expense.id }, error: blocked }), 400);
+    }
     res.flashRedirect(`/groups/${req.group.id}`, 'Expense updated.');
   });
 
   app.post('/groups/:gid/expenses/:eid/delete', loadExpense, (req, res) => {
-    store.expenses.delete(req.expense.id);
-    res.flashRedirect(`/groups/${req.group.id}`, `Deleted “${req.expense.description}”.`);
+    const e = req.expense;
+    const blocked = changeLedger(req, () => store.expenses.delete(e.id));
+    if (blocked) {
+      return res.page('Edit expense', V.expenseFormPage({
+        group: req.group, me: req.user, people: peopleFor(req, e), expense: { ...e, amount: plain(e.amountCents) }, error: blocked,
+      }), 400);
+    }
+    res.flashRedirect(`/groups/${req.group.id}`, `Deleted “${e.description}”.`);
   });
 
   // ---------- settlements ----------
@@ -357,12 +390,21 @@ export function createApp(db) {
     if (error) {
       return res.page('Edit payment', V.settlementFormPage({ group: req.group, me: req.user, people, settlement: { ...draft, id: req.settlement.id }, error }), 400);
     }
-    store.settlements.save({ ...value, id: req.settlement.id }, req.user.id);
+    const blocked = changeLedger(req, () => store.settlements.save({ ...value, id: req.settlement.id }, req.user.id));
+    if (blocked) {
+      return res.page('Edit payment', V.settlementFormPage({ group: req.group, me: req.user, people, settlement: { ...value, id: req.settlement.id }, error: blocked }), 400);
+    }
     res.flashRedirect(`/groups/${req.group.id}`, 'Payment updated.');
   });
 
   app.post('/groups/:gid/settlements/:sid/delete', loadSettlement, (req, res) => {
-    store.settlements.delete(req.settlement.id);
+    const s = req.settlement;
+    const blocked = changeLedger(req, () => store.settlements.delete(s.id));
+    if (blocked) {
+      return res.page('Edit payment', V.settlementFormPage({
+        group: req.group, me: req.user, people: settlementPeople(req, s), settlement: { ...s, amount: plain(s.amountCents) }, error: blocked,
+      }), 400);
+    }
     res.flashRedirect(`/groups/${req.group.id}`, 'Payment deleted.');
   });
 

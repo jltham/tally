@@ -23,9 +23,13 @@ if (form) {
     sections.forEach((s) => (s.hidden = s.dataset.split !== type));
     const total = toCents(amount.value) ?? 0;
 
-    // Equal: show each person's share (leftover cents go to the first people, as on the server).
+    // Equal: show each person's share. As on the server, the payer covers the first odd cent,
+    // then the lowest ids.
     const boxes = [...form.querySelectorAll('input[name="participants"]')];
-    const chosen = boxes.filter((b) => b.checked).sort((a, b) => Number(a.value) - Number(b.value));
+    const payer = form.querySelector('select[name="paid_by"]').value;
+    const chosen = boxes
+      .filter((b) => b.checked)
+      .sort((a, b) => (a.value === payer ? -1 : b.value === payer ? 1 : Number(a.value) - Number(b.value)));
     const base = chosen.length ? Math.floor(total / chosen.length) : 0;
     let extra = chosen.length ? total - base * chosen.length : 0;
     const each = new Map(chosen.map((b) => [b, base + (extra-- > 0 ? 1 : 0)]));

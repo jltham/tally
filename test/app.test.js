@@ -122,6 +122,54 @@ test('full flow: group, expenses, balances, settle up, edit, delete', async () =
   assert.equal((await alice.get(`/groups/${gid}`)).status, 404);
 });
 
+test('a group with unpaid debts cannot be deleted until settled', async () => {
+  const p = await signup('Pat', 'p@x.com');
+  await signup('Quinn', 'q@x.com');
+  const [pid, qid] = ['p@x.com', 'q@x.com'].map(idOf);
+  let r = await p.post('/groups', { name: 'Debts', members: String(qid) });
+  const gid = Number(r.location.split('/').pop());
+  await p.post(`/groups/${gid}/expenses`, new URLSearchParams([
+    ['description', 'Lunch'], ['amount', '20'], ['paid_by', String(pid)], ['spent_on', '2026-11-01'],
+    ['split_type', 'equal'], ['participants', String(pid)], ['participants', String(qid)],
+  ]));
+  r = await p.post(`/groups/${gid}/delete`, {});
+  assert.equal(r.status, 400);
+  assert.match(r.text, /settled up/);
+  await p.post(`/groups/${gid}/settlements`, { from_user: String(qid), to_user: String(pid), amount: '10', paid_on: '2026-11-02' });
+  assert.equal((await p.post(`/groups/${gid}/delete`, {})).status, 302);
+});
+
+test('changes that would leave a removed member owing money are refused', async () => {
+  const r1 = await signup('Rae', 'r@x.com');
+  await signup('Sam', 's@x.com');
+  const [rid, sid] = ['r@x.com', 's@x.com'].map(idOf);
+  let r = await r1.post('/groups', { name: 'Former', members: String(sid) });
+  const gid = Number(r.location.split('/').pop());
+  const expenseForm = (amount) => new URLSearchParams([
+    ['description', 'Dinner'], ['amount', amount], ['paid_by', String(rid)], ['spent_on', '2026-11-01'],
+    ['split_type', 'equal'], ['participants', String(rid)], ['participants', String(sid)],
+  ]);
+  await r1.post(`/groups/${gid}/expenses`, expenseForm('100'));
+  await r1.post(`/groups/${gid}/settlements`, { from_user: String(sid), to_user: String(rid), amount: '50', paid_on: '2026-11-02' });
+  assert.equal((await r1.post(`/groups/${gid}/members/${sid}/remove`, {})).status, 302);
+
+  const eid = db.prepare("SELECT id FROM expenses WHERE group_id = ? AND description = 'Dinner'").get(gid).id;
+  r = await r1.post(`/groups/${gid}/expenses/${eid}`, expenseForm('80'));
+  assert.equal(r.status, 400);
+  assert.match(r.text, /Sam.*no longer in this group/);
+  assert.equal(db.prepare('SELECT amount_cents FROM expenses WHERE id = ?').get(eid).amount_cents, 10000);
+  assert.equal((await r1.post(`/groups/${gid}/expenses/${eid}/delete`, {})).status, 400);
+  const sidRow = db.prepare('SELECT id FROM settlements WHERE group_id = ?').get(gid).id;
+  assert.equal((await r1.post(`/groups/${gid}/settlements/${sidRow}/delete`, {})).status, 400);
+
+  // Unrelated edits still work
+  r = await r1.post(`/groups/${gid}/expenses/${eid}`, new URLSearchParams([
+    ['description', 'Dinner out'], ['amount', '100'], ['paid_by', String(rid)], ['spent_on', '2026-11-01'],
+    ['split_type', 'equal'], ['participants', String(rid)], ['participants', String(sid)],
+  ]));
+  assert.equal(r.status, 302, r.text);
+});
+
 test('HTML in user input is escaped', async () => {
   const u = await signup('<script>x</script>', 'xss@x.com');
   const r = await u.get('/');
