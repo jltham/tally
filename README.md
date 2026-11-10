@@ -1,6 +1,8 @@
 # Tally — shared expenses for a small circle
 
-**Demo:** [docs/tally-demo.webm](docs/tally-demo.webm), a 68-second captioned tour: logging in, adding and editing an expense, settling up, and what a non-member sees.
+[![Tally demo: logging in, adding and editing an expense, settling up, and what a non-member sees](docs/tally-demo.gif)](docs/tally-demo.webm)
+
+*68-second captioned tour. Click it for the full-quality video ([tally-demo.webm](docs/tally-demo.webm)).*
 
 Tally is a Splitwise-style app for **one small circle of people (at most 10 accounts)**: flatmates, a travel group, a regular dinner crew. It runs on your own machine with a local SQLite database.
 
