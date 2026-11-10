@@ -53,8 +53,11 @@ Demo logins after seeding: `alice@example.com`, `ben@example.com`, `chloe@exampl
 Tally only accepts connections from this computer. To let other devices on a network you trust use it, start it with `HOST=0.0.0.0 npm start`. After 5 wrong passwords for an email (or 20 from one address) in 15 minutes, logins pause until that window ends.
 
 ```bash
-npm test
+npm test         # includes a check that the whole project lints clean
+npm run lint     # ESLint on its own
 ```
+
+`lib/ledger.js` runs in both Node and the browser, so lint gives it no environment globals: using `Buffer`, `process` or `document` there fails.
 
 The database lives in `data/tally.db`. Delete that file to start over.
 
