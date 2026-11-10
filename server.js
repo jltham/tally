@@ -10,16 +10,22 @@ import { flash } from './lib/flash.js';
 import { toCents, toAmountText, simplifyDebts, effectOn, netWithEachPerson, isSettled } from './lib/ledger.js';
 import { cleanText, toIds, isEmail, safeNextPath, parseExpense, parseSettlement } from './lib/forms.js';
 import { todayIso } from './lib/dates.js';
-import { MAX_USERS, MIN_PASSWORD_LENGTH, LOGIN_LIMITS } from './lib/limits.js';
+import { MAX_USERS, MIN_PASSWORD_LENGTH, LOGIN_LIMITS, MAX_LENGTH } from './lib/limits.js';
 import { createThrottle } from './lib/throttle.js';
 import { securityHeaders, refuseCrossSiteWrites } from './lib/security.js';
 import * as views from './lib/views.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+/** A URL id as a number, or undefined if it isn't a safe integer ("abc", "1.5", "1e99"). */
+const toSafeId = (value) => {
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : undefined;
+};
+
 export function createApp(db) {
   const store = createStore(db);
-  purgeExpiredSessions(db);
+  purgeExpiredSessions(store.sessions);
   const app = express();
   app.disable('x-powered-by');
   app.use(securityHeaders);
@@ -28,7 +34,7 @@ export function createApp(db) {
   // The browser imports the same money maths the server uses.
   app.get('/ledger.js', (req, res) => res.sendFile(join(HERE, 'lib', 'ledger.js')));
   app.use(express.urlencoded({ extended: false, limit: '20kb' }));
-  app.use(loadUser(db));
+  app.use(loadUser(store.sessions));
   app.use(flash);
   app.use((req, res, next) => {
     res.page = (title, body, status = 200) =>
@@ -54,7 +60,7 @@ export function createApp(db) {
   });
 
   app.post('/login', (req, res) => {
-    const email = cleanText(req.body.email, 200).toLowerCase();
+    const email = cleanText(req.body.email, MAX_LENGTH.email).toLowerCase();
     const next = safeNextPath(req.body.next);
     const loginPage = (error, status) => res.page('Log in', views.loginPage({ error, email, next, spotsLeft: spotsLeft() }), status);
     // Checked before the password, so a locked email can't be guessed even with the right one.
@@ -69,8 +75,8 @@ export function createApp(db) {
       return loginPage('That email and password don’t match.', 401);
     }
     failedLoginsByEmail.clear(email);
-    purgeExpiredSessions(db);
-    startSession(db, res, user.id);
+    purgeExpiredSessions(store.sessions);
+    startSession(store.sessions, res, user.id);
     res.redirect(next);
   });
 
@@ -80,7 +86,7 @@ export function createApp(db) {
   });
 
   app.post('/signup', (req, res) => {
-    const values = { name: cleanText(req.body.name, 40), email: cleanText(req.body.email, 200).toLowerCase() };
+    const values = { name: cleanText(req.body.name, MAX_LENGTH.userName), email: cleanText(req.body.email, MAX_LENGTH.email).toLowerCase() };
     const password = passwordOf(req.body, 'password');
     const fail = (error, status = 400) => res.page('Sign up', views.signupPage({ error, values, spotsLeft: spotsLeft() }), status);
     if (spotsLeft() <= 0) return fail(`All ${MAX_USERS} accounts are taken.`, 403);
@@ -89,12 +95,12 @@ export function createApp(db) {
     if (password.length < MIN_PASSWORD_LENGTH) return fail(`Your password needs at least ${MIN_PASSWORD_LENGTH} characters.`);
     if (store.users.byEmail(values.email)) return fail('There’s already an account with that email.');
     const id = store.users.create(values.name, values.email, hashPassword(password));
-    startSession(db, res, id);
+    startSession(store.sessions, res, id);
     res.flashRedirect('/', `Welcome to Tally, ${values.name}!`);
   });
 
   app.post('/logout', (req, res) => {
-    endSession(db, req, res);
+    endSession(store.sessions, req, res);
     res.redirect('/login');
   });
 
@@ -123,7 +129,7 @@ export function createApp(db) {
   });
 
   app.post('/groups', (req, res) => {
-    const name = cleanText(req.body.name, 60);
+    const name = cleanText(req.body.name, MAX_LENGTH.groupName);
     const members = existingUserIds(req.body.members);
     if (!name) {
       return res.page('New group', views.groupNewPage({ me: req.user, allUsers: store.users.all(), error: 'Give the group a name.', values: { name, members } }), 400);
@@ -134,8 +140,8 @@ export function createApp(db) {
 
   // Every /groups/:gid route below requires the user to be a member of that group.
   app.use('/groups/:gid', (req, res, next) => {
-    const groupId = Number(req.params.gid);
-    req.group = Number.isSafeInteger(groupId) ? store.groups.getForMember(groupId, req.user.id) : undefined;
+    const groupId = toSafeId(req.params.gid);
+    req.group = groupId === undefined ? undefined : store.groups.getForMember(groupId, req.user.id);
     if (!req.group) return notFound(res);
     req.members = store.groups.members(groupId);
     req.memberIds = new Set(req.members.map((m) => m.id));
@@ -176,7 +182,7 @@ export function createApp(db) {
   app.get('/groups/:gid/edit', (req, res) => renderSettings(req, res));
 
   app.post('/groups/:gid/rename', (req, res) => {
-    const name = cleanText(req.body.name, 60);
+    const name = cleanText(req.body.name, MAX_LENGTH.groupName);
     if (!name) return renderSettings(req, res, 'The group needs a name.', 400);
     store.groups.rename(req.group.id, name);
     res.flashRedirect(`/groups/${req.group.id}/edit`, 'Group renamed.');
@@ -238,107 +244,111 @@ export function createApp(db) {
     return [...people.values()].filter(Boolean);
   };
 
-  // ---------- expenses ----------
-  const expensePeople = (req, e) => peopleIncluding(req, [e.paidBy, ...e.shares.map((s) => s.userId)]);
-  const savedExpenseForm = (e) => ({ ...e, amount: toAmountText(e.amountCents) });
-  const renderExpenseForm = (req, res, { people, expense, error }) => {
-    const title = expense?.id ? 'Edit expense' : 'Add expense';
-    res.page(title, views.expenseFormPage({ group: req.group, me: req.user, people, expense, error }), error ? 400 : 200);
-  };
+  // ---------- expenses and payments ----------
+  /**
+   * Expenses and payments ("entries") share one set of routes:
+   *   GET  /groups/:gid/<path>/new          form for a new entry
+   *   POST /groups/:gid/<path>              create
+   *   GET  /groups/:gid/<path>/:<param>/edit
+   *   POST /groups/:gid/<path>/:<param>     update   (guarded by changeLedger)
+   *   POST /groups/:gid/<path>/:<param>/delete       (guarded by changeLedger)
+   */
+  function entryRoutes(kind) {
+    const { path, param, repo, parse, formPage, formKey, titles, messages } = kind;
+    const peopleFor = (req, entry) => peopleIncluding(req, kind.peopleOn(entry));
+    const savedForm = (entry) => ({ ...entry, amount: toAmountText(entry.amountCents) });
+    const render = (req, res, { people, entry, error }) => {
+      const title = entry?.id ? titles.edit : titles.new;
+      res.page(title, formPage({ group: req.group, me: req.user, people, [formKey]: entry, error }), error ? 400 : 200);
+    };
 
-  const loadExpense = (req, res, next) => {
-    const expense = store.expenses.get(Number(req.params.eid));
-    if (!expense || expense.groupId !== req.group.id) return notFound(res);
-    req.expense = expense;
-    next();
-  };
+    // Loads the entry for :<param>, which must be an id in this group.
+    app.param(param, (req, res, next, value) => {
+      const id = toSafeId(value);
+      const entry = id === undefined ? undefined : repo.get(id);
+      if (!entry || entry.groupId !== req.group?.id) return notFound(res);
+      req.entry = entry;
+      next();
+    });
 
-  app.get('/groups/:gid/expenses/new', (req, res) => renderExpenseForm(req, res, { people: req.members }));
+    const base = `/groups/:gid/${path}`;
+    app.get(`${base}/new`, (req, res) => {
+      const start = kind.newEntry ? kind.newEntry(req, res) : {};
+      if (start) render(req, res, { people: req.members, entry: start.entry });
+    });
 
-  app.post('/groups/:gid/expenses', (req, res) => {
-    const people = req.members;
-    const { value, error, draft } = parseExpense(req.body, people);
-    if (error) return renderExpenseForm(req, res, { people, expense: draft, error });
-    store.expenses.save({ ...value, groupId: req.group.id }, req.user.id);
-    res.flashRedirect(`/groups/${req.group.id}`, `Added “${value.description}”.`);
+    app.post(base, (req, res) => {
+      const people = req.members;
+      const { value, error, draft } = parse(req.body, people);
+      if (error) return render(req, res, { people, entry: draft, error });
+      repo.save({ ...value, groupId: req.group.id }, req.user.id);
+      res.flashRedirect(`/groups/${req.group.id}`, messages.created(value));
+    });
+
+    app.get(`${base}/:${param}/edit`, (req, res) => {
+      render(req, res, { people: peopleFor(req, req.entry), entry: savedForm(req.entry) });
+    });
+
+    app.post(`${base}/:${param}`, (req, res) => {
+      const id = req.entry.id;
+      const people = peopleFor(req, req.entry);
+      const { value, error, draft } = parse(req.body, people);
+      if (error) return render(req, res, { people, entry: { ...draft, id }, error });
+      const blocked = changeLedger(req, () => repo.save({ ...value, id }, req.user.id));
+      if (blocked) return render(req, res, { people, entry: { ...value, id }, error: blocked });
+      res.flashRedirect(`/groups/${req.group.id}`, messages.updated);
+    });
+
+    app.post(`${base}/:${param}/delete`, (req, res) => {
+      const entry = req.entry;
+      const blocked = changeLedger(req, () => repo.delete(entry.id));
+      if (blocked) return render(req, res, { people: peopleFor(req, entry), entry: savedForm(entry), error: blocked });
+      res.flashRedirect(`/groups/${req.group.id}`, messages.deleted(entry));
+    });
+  }
+
+  entryRoutes({
+    path: 'expenses',
+    param: 'eid',
+    repo: store.expenses,
+    parse: parseExpense,
+    formPage: views.expenseFormPage,
+    formKey: 'expense',
+    titles: { new: 'Add expense', edit: 'Edit expense' },
+    peopleOn: (e) => [e.paidBy, ...e.shares.map((s) => s.userId)],
+    messages: {
+      created: (e) => `Added “${e.description}”.`,
+      updated: 'Expense updated.',
+      deleted: (e) => `Deleted “${e.description}”.`,
+    },
   });
 
-  app.get('/groups/:gid/expenses/:eid/edit', loadExpense, (req, res) => {
-    renderExpenseForm(req, res, { people: expensePeople(req, req.expense), expense: savedExpenseForm(req.expense) });
-  });
-
-  app.post('/groups/:gid/expenses/:eid', loadExpense, (req, res) => {
-    const id = req.expense.id;
-    const people = expensePeople(req, req.expense);
-    const { value, error, draft } = parseExpense(req.body, people);
-    if (error) return renderExpenseForm(req, res, { people, expense: { ...draft, id }, error });
-    const blocked = changeLedger(req, () => store.expenses.save({ ...value, id }, req.user.id));
-    if (blocked) return renderExpenseForm(req, res, { people, expense: { ...value, id }, error: blocked });
-    res.flashRedirect(`/groups/${req.group.id}`, 'Expense updated.');
-  });
-
-  app.post('/groups/:gid/expenses/:eid/delete', loadExpense, (req, res) => {
-    const expense = req.expense;
-    const blocked = changeLedger(req, () => store.expenses.delete(expense.id));
-    if (blocked) return renderExpenseForm(req, res, { people: expensePeople(req, expense), expense: savedExpenseForm(expense), error: blocked });
-    res.flashRedirect(`/groups/${req.group.id}`, `Deleted “${expense.description}”.`);
-  });
-
-  // ---------- settlements ----------
-  const settlementPeople = (req, s) => peopleIncluding(req, [s.fromUser, s.toUser]);
-  const savedSettlementForm = (s) => ({ ...s, amount: toAmountText(s.amountCents) });
-  const renderSettlementForm = (req, res, { people, settlement, error }) => {
-    const title = settlement?.id ? 'Edit payment' : 'Settle up';
-    res.page(title, views.settlementFormPage({ group: req.group, me: req.user, people, settlement, error }), error ? 400 : 200);
-  };
-
-  const loadSettlement = (req, res, next) => {
-    const settlement = store.settlements.get(Number(req.params.sid));
-    if (!settlement || settlement.groupId !== req.group.id) return notFound(res);
-    req.settlement = settlement;
-    next();
-  };
-
-  app.get('/groups/:gid/settlements/new', (req, res) => {
-    if (req.members.length < 2) return res.flashRedirect(`/groups/${req.group.id}`, 'Add someone else to the group first.');
-    // "Record" on a suggested payment pre-fills the form.
-    const from = Number(req.query.from);
-    const to = Number(req.query.to);
-    const prefill = req.memberIds.has(from) && req.memberIds.has(to) && from !== to
-      ? { fromUser: from, toUser: to, amount: toCents(req.query.amount) ? cleanText(req.query.amount, 20) : '', paidOn: todayIso(), note: '' }
-      : undefined;
-    renderSettlementForm(req, res, { people: req.members, settlement: prefill });
-  });
-
-  app.post('/groups/:gid/settlements', (req, res) => {
-    const people = req.members;
-    const { value, error, draft } = parseSettlement(req.body, people);
-    if (error) return renderSettlementForm(req, res, { people, settlement: draft, error });
-    store.settlements.save({ ...value, groupId: req.group.id }, req.user.id);
-    res.flashRedirect(`/groups/${req.group.id}`, 'Payment recorded.');
-  });
-
-  app.get('/groups/:gid/settlements/:sid/edit', loadSettlement, (req, res) => {
-    renderSettlementForm(req, res, { people: settlementPeople(req, req.settlement), settlement: savedSettlementForm(req.settlement) });
-  });
-
-  app.post('/groups/:gid/settlements/:sid', loadSettlement, (req, res) => {
-    const id = req.settlement.id;
-    const people = settlementPeople(req, req.settlement);
-    const { value, error, draft } = parseSettlement(req.body, people);
-    if (error) return renderSettlementForm(req, res, { people, settlement: { ...draft, id }, error });
-    const blocked = changeLedger(req, () => store.settlements.save({ ...value, id }, req.user.id));
-    if (blocked) return renderSettlementForm(req, res, { people, settlement: { ...value, id }, error: blocked });
-    res.flashRedirect(`/groups/${req.group.id}`, 'Payment updated.');
-  });
-
-  app.post('/groups/:gid/settlements/:sid/delete', loadSettlement, (req, res) => {
-    const settlement = req.settlement;
-    const blocked = changeLedger(req, () => store.settlements.delete(settlement.id));
-    if (blocked) {
-      return renderSettlementForm(req, res, { people: settlementPeople(req, settlement), settlement: savedSettlementForm(settlement), error: blocked });
-    }
-    res.flashRedirect(`/groups/${req.group.id}`, 'Payment deleted.');
+  entryRoutes({
+    path: 'settlements',
+    param: 'sid',
+    repo: store.settlements,
+    parse: parseSettlement,
+    formPage: views.settlementFormPage,
+    formKey: 'settlement',
+    titles: { new: 'Settle up', edit: 'Edit payment' },
+    peopleOn: (s) => [s.fromUser, s.toUser],
+    messages: {
+      created: () => 'Payment recorded.',
+      updated: 'Payment updated.',
+      deleted: () => 'Payment deleted.',
+    },
+    // Settling up needs someone to pay; "Record" on a suggested payment pre-fills the form.
+    newEntry(req, res) {
+      if (req.members.length < 2) {
+        res.flashRedirect(`/groups/${req.group.id}`, 'Add someone else to the group first.');
+        return null;
+      }
+      const from = Number(req.query.from);
+      const to = Number(req.query.to);
+      const suggested = req.memberIds.has(from) && req.memberIds.has(to) && from !== to;
+      const amount = toCents(req.query.amount) ? cleanText(req.query.amount, MAX_LENGTH.amount) : '';
+      return { entry: suggested ? { fromUser: from, toUser: to, amount, paidOn: todayIso(), note: '' } : undefined };
+    },
   });
 
   // ---------- account ----------
@@ -352,7 +362,7 @@ export function createApp(db) {
   });
 
   app.post('/account/name', (req, res) => {
-    const name = cleanText(req.body.name, 40);
+    const name = cleanText(req.body.name, MAX_LENGTH.userName);
     if (!name) return renderAccount(req, res, { error: 'Your name can’t be empty.' });
     store.users.rename(req.user.id, name);
     res.flashRedirect('/account', 'Name saved.');
@@ -368,7 +378,7 @@ export function createApp(db) {
     }
     store.users.setPassword(req.user.id, hashPassword(password));
     // Anyone else signed in as this user (a shared computer, a copied cookie) is signed out.
-    endOtherSessions(db, req.user.id, req.sessionToken);
+    endOtherSessions(store.sessions, req.user.id, req.sessionToken);
     res.flashRedirect('/account', 'Password changed.');
   });
 
@@ -378,7 +388,7 @@ export function createApp(db) {
       return renderAccount(req, res, { error: 'That password isn’t right.' });
     }
     if (store.users.groupCount(id) > 0) return renderAccount(req, res, { error: 'Leave all your groups first.' });
-    endSession(db, req, res);
+    endSession(store.sessions, req, res);
     // On past expenses: keep the row so the history adds up, but remove everything personal.
     if (store.users.isReferenced(id)) store.users.anonymise(id);
     else store.users.delete(id);
