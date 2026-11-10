@@ -1,0 +1,23 @@
+{
+  "name": "tally",
+  "version": "1.0.0",
+  "description": "Splitwise-style shared expenses for up to 10 people",
+  "main": "server.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "seed": "node scripts/seed.js",
+    "test": "node --test test/"
+  },
+  "type": "module",
+  "dependencies": {
+    "express": "^5.3.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.5"
+  }
+}
