@@ -170,6 +170,15 @@ test('changes that would leave a removed member owing money are refused', async 
   assert.equal(r.status, 302, r.text);
 });
 
+test('the last member leaving deletes the group instead of stranding it', async () => {
+  const solo = await signup('Solo', 'solo@x.com');
+  const soloId = idOf('solo@x.com');
+  const r = await solo.post('/groups', { name: 'Just me' });
+  const gid = Number(r.location.split('/').pop());
+  assert.equal((await solo.post(`/groups/${gid}/members/${soloId}/remove`, {})).status, 302);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM groups WHERE id = ?').get(gid).n, 0);
+});
+
 test('HTML in user input is escaped', async () => {
   const u = await signup('<script>x</script>', 'xss@x.com');
   const r = await u.get('/');

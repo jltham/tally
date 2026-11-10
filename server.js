@@ -5,7 +5,7 @@ import { openDb, tx } from './lib/db.js';
 import { createStore } from './lib/store.js';
 import { hashPassword, verifyPassword, startSession, endSession, loadUser, requireLogin } from './lib/auth.js';
 import { flash } from './lib/flash.js';
-import { toCents, toAmountText, simplifyDebts, effectOn, netWithEachPerson } from './lib/ledger.js';
+import { toCents, toAmountText, simplifyDebts, effectOn, netWithEachPerson, isSettled } from './lib/ledger.js';
 import { cleanText, toIds, isEmail, safeNextPath, parseExpense, parseSettlement } from './lib/forms.js';
 import { todayIso } from './lib/dates.js';
 import { MAX_USERS, MIN_PASSWORD_LENGTH } from './lib/limits.js';
@@ -83,14 +83,14 @@ export function createApp(db) {
 
   // ---------- dashboard ----------
   app.get('/', (req, res) => {
-    const me = req.user.id;
+    const myId = req.user.id;
     const payments = [];
-    const groups = store.groups.forUser(me).map((group) => {
+    const groups = store.groups.forUser(myId).map((group) => {
       const balances = store.groupBalances(group.id);
       payments.push(...simplifyDebts(balances));
-      return { ...group, cents: balances.get(me) ?? 0 };
+      return { ...group, cents: balances.get(myId) ?? 0 };
     });
-    const people = [...netWithEachPerson(me, payments)]
+    const people = [...netWithEachPerson(myId, payments)]
       .map(([id, cents]) => ({ ...store.users.get(id), cents }))
       .sort((a, b) => b.cents - a.cents);
     const owedToMe = people.filter((p) => p.cents > 0).reduce((total, p) => total + p.cents, 0);
@@ -119,6 +119,7 @@ export function createApp(db) {
     req.group = Number.isSafeInteger(groupId) ? store.groups.getForMember(groupId, req.user.id) : undefined;
     if (!req.group) return notFound(res);
     req.members = store.groups.members(groupId);
+    req.memberIds = new Set(req.members.map((m) => m.id));
     next();
   });
 
@@ -126,16 +127,16 @@ export function createApp(db) {
   const makeNameLookup = () => {
     const names = new Map();
     return (id) => {
-      if (!names.has(id)) names.set(id, store.users.get(id)?.name ?? 'Deleted user');
+      if (!names.has(id)) names.set(id, store.users.nameOf(id));
       return names.get(id);
     };
   };
 
   app.get('/groups/:gid', (req, res) => {
     const group = req.group;
-    const me = req.user.id;
+    const myId = req.user.id;
     const timeline = [
-      ...store.expenses.forGroup(group.id).map((e) => ({ ...e, kind: 'expense', date: e.spentOn, effect: effectOn(me, e) })),
+      ...store.expenses.forGroup(group.id).map((e) => ({ ...e, kind: 'expense', date: e.spentOn, effect: effectOn(myId, e) })),
       ...store.settlements.forGroup(group.id).map((s) => ({ ...s, kind: 'settlement', date: s.paidOn })),
     ].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
     const balances = store.groupBalances(group.id);
@@ -146,10 +147,9 @@ export function createApp(db) {
   });
 
   const renderSettings = (req, res, error, status = 200) => {
-    const memberIds = new Set(req.members.map((m) => m.id));
     res.page('Group settings', views.groupSettingsPage({
       group: req.group, me: req.user, members: req.members,
-      others: store.users.all().filter((u) => !memberIds.has(u.id)),
+      others: store.users.all().filter((u) => !req.memberIds.has(u.id)),
       balances: store.groupBalances(req.group.id), error,
     }), status);
   };
@@ -172,9 +172,14 @@ export function createApp(db) {
   app.post('/groups/:gid/members/:uid/remove', (req, res) => {
     const userId = Number(req.params.uid);
     const group = req.group;
-    if (!req.members.some((m) => m.id === userId)) return notFound(res);
+    if (!req.memberIds.has(userId)) return notFound(res);
     if ((store.groupBalances(group.id).get(userId) ?? 0) !== 0) {
       return renderSettings(req, res, 'Only people who are settled up can be removed. Record the payments first.', 400);
+    }
+    // A group with nobody in it could never be seen or deleted again, so the last one out deletes it.
+    if (req.members.length === 1) {
+      store.groups.delete(group.id);
+      return res.flashRedirect('/', `You left “${group.name}”. You were the last member, so the group was deleted.`);
     }
     store.groups.removeMember(group.id, userId);
     if (userId === req.user.id) return res.flashRedirect('/', `You left “${group.name}”.`);
@@ -182,9 +187,7 @@ export function createApp(db) {
   });
 
   app.post('/groups/:gid/delete', (req, res) => {
-    if ([...store.groupBalances(req.group.id).values()].some((cents) => cents !== 0)) {
-      return renderSettings(req, res, 'This group can only be deleted once everyone is settled up, so nobody loses track of money they’re owed.', 400);
-    }
+    if (!isSettled(store.groupBalances(req.group.id))) return renderSettings(req, res, views.SETTLE_BEFORE_DELETING, 400);
     store.groups.delete(req.group.id);
     res.flashRedirect('/', `Deleted “${req.group.name}”.`);
   });
@@ -194,18 +197,17 @@ export function createApp(db) {
    * has left the group with a balance (they can no longer settle it). Returns an error message or null.
    */
   function changeLedger(req, change) {
-    const memberIds = new Set(req.members.map((m) => m.id));
     let owing = [];
     try {
       tx(db, () => {
         change();
-        owing = [...store.groupBalances(req.group.id)].filter(([id, cents]) => cents !== 0 && !memberIds.has(id));
+        owing = [...store.groupBalances(req.group.id)].filter(([id, cents]) => cents !== 0 && !req.memberIds.has(id));
         if (owing.length) throw new Error('former member would owe money');
       });
       return null;
     } catch (err) {
       if (!owing.length) throw err;
-      const names = owing.map(([id]) => store.users.get(id)?.name ?? 'a former member').join(' and ');
+      const names = owing.map(([id]) => store.users.nameOf(id)).join(' and ');
       return `This would leave ${names} with an unsettled balance, but ${owing.length === 1 ? 'they are' : 'they are all'} no longer in this group. Add them back in Settings first if the change is right.`;
     }
   }
@@ -281,10 +283,9 @@ export function createApp(db) {
   app.get('/groups/:gid/settlements/new', (req, res) => {
     if (req.members.length < 2) return res.flashRedirect(`/groups/${req.group.id}`, 'Add someone else to the group first.');
     // "Record" on a suggested payment pre-fills the form.
-    const memberIds = new Set(req.members.map((m) => m.id));
     const from = Number(req.query.from);
     const to = Number(req.query.to);
-    const prefill = memberIds.has(from) && memberIds.has(to) && from !== to
+    const prefill = req.memberIds.has(from) && req.memberIds.has(to) && from !== to
       ? { fromUser: from, toUser: to, amount: toCents(req.query.amount) ? cleanText(req.query.amount, 20) : '', paidOn: todayIso(), note: '' }
       : undefined;
     renderSettlementForm(req, res, { people: req.members, settlement: prefill });

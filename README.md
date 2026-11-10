@@ -29,7 +29,9 @@ Tally is a Splitwise-style app for **one small circle of people (at most 10 acco
 Rules that keep the money straight:
 
 - Members can only be removed from a group once their balance there is zero, and Tally refuses any later edit or delete that would give a removed member a balance again (add them back first).
-- When a bill doesn't split evenly, the person who paid covers the odd cent.
+- When a bill doesn't split evenly, the person who paid covers the first leftover cent if they're part of the split. Any further leftover cents (there can be up to one fewer than the number of people) go to the others in a fixed order, oldest account first.
+- When the last member leaves a group, the group is deleted, so it never lingers with nobody able to see it.
+- Suggested payments can have you pay someone you never shared a bill with: that's how the number of payments is kept as low as possible, and everyone still ends up even.
 - "Suggested payments" is the true minimum number of payments, not an approximation.
 
 ## Run it

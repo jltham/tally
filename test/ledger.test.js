@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toCents, formatCents, toAmountText, splitEqual, computeBalances, simplifyDebts, effectOn, netWithEachPerson } from '../lib/ledger.js';
+import { toCents, formatCents, toAmountText, splitEqual, computeBalances, simplifyDebts, effectOn, netWithEachPerson, isSettled } from '../lib/ledger.js';
 import { isIsoDate } from '../lib/dates.js';
 
 test('toCents parses typical inputs', () => {
@@ -144,4 +144,10 @@ test('toAmountText and isIsoDate', () => {
   assert.equal(toAmountText(5), '0.05');
   assert.ok(isIsoDate('2026-02-28'));
   for (const bad of ['2026-02-30', '2026-2-1', '', 'tomorrow']) assert.ok(!isIsoDate(bad), bad);
+});
+
+test('isSettled', () => {
+  assert.ok(isSettled(new Map()));
+  assert.ok(isSettled(new Map([[1, 0], [2, 0]])));
+  assert.ok(!isSettled(new Map([[1, 5], [2, -5]])));
 });
