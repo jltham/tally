@@ -31,8 +31,9 @@ export function createApp(db) {
   app.use(securityHeaders);
   app.use(refuseCrossSiteWrites);
   app.use(express.static(join(HERE, 'public')));
-  // The browser imports the same money maths the server uses.
-  app.get('/ledger.js', (req, res) => res.sendFile(join(HERE, 'lib', 'ledger.js')));
+  // The browser imports the same money maths the server uses. Sent relative to `root` so only
+  // "ledger.js" itself is checked for a leading dot, not every folder Tally is installed under.
+  app.get('/ledger.js', (req, res) => res.sendFile('ledger.js', { root: join(HERE, 'lib') }));
   app.use(express.urlencoded({ extended: false, limit: '20kb' }));
   app.use(loadUser(store.sessions));
   app.use(flash);
