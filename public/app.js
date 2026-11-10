@@ -17,7 +17,12 @@ if (form) {
 
   const update = () => {
     const splitType = form.querySelector('input[name="split_type"]:checked')?.value ?? 'equal';
-    sections.forEach((section) => (section.hidden = section.dataset.split !== splitType));
+    // Show only the chosen split, and disable the other's fields so they aren't submitted.
+    // (Without JS both are shown and the server refuses an ambiguous form instead.)
+    sections.forEach((section) => {
+      section.hidden = section.dataset.split !== splitType;
+      section.querySelectorAll('input').forEach((input) => (input.disabled = section.hidden));
+    });
     const total = toCents(amount.value) ?? 0;
 
     // Equal: show each person's share.
